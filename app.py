@@ -46,9 +46,8 @@ st.markdown("""
 
 def check_ollama() -> bool:
     try:
-        import ollama
         import httpx
-        resp = httpx.get("http://127.0.0.1:11434/api/tags", timeout=2)
+        resp = httpx.get("http://127.0.0.1:11434/api/tags", timeout=1)
         return resp.status_code == 200
     except Exception:
         return False
