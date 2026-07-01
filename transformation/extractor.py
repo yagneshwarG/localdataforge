@@ -34,8 +34,11 @@ Return a JSON object with these fields:
 JSON:"""
 
 
-def _call_ollama(prompt: str, model: str | None = None) -> str:
-    import ollama
+def _call_ollama(prompt: str, model: str | None = None) -> str | None:
+    try:
+        import ollama
+    except ImportError:
+        return None
 
     model = model or LLM_MODEL
 
@@ -52,12 +55,86 @@ def _call_ollama(prompt: str, model: str | None = None) -> str:
             }
         )
         return result.get("response", "")
-    except ollama.ResponseError as e:
-        raise RuntimeError(f"Ollama API error {e.status_code}: {e.error}")
-    except Exception as e:
-        raise RuntimeError(
-            f"Ollama connection failed. Is Ollama running? Error: {e}"
-        )
+    except Exception:
+        return None
+
+
+def _fallback_extract(text: str) -> dict:
+    import re
+
+    lines = [l.strip() for l in text.split("\n") if l.strip()]
+    first_line = lines[0] if lines else text[:80]
+
+    participants = re.findall(r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b', text)
+    participants = list(dict.fromkeys(p for p in participants if len(p) > 2))[:5]
+
+    lower = text.lower()
+    if any(w in lower for w in ["meeting", "standup", "sync", "discussion"]):
+        doc_type = "meeting"
+    elif any(w in lower for w in ["lecture", "class", "lesson", "tutorial"]):
+        doc_type = "lecture"
+    elif any(w in lower for w in ["note", "notes"]):
+        doc_type = "note"
+    elif any(w in lower for w in ["interview"]):
+        doc_type = "interview"
+    else:
+        doc_type = "other"
+
+    positive = sum(lower.count(w) for w in ["good", "great", "positive", "happy", "success", "excellent", "well"])
+    negative = sum(lower.count(w) for w in ["bad", "issue", "bug", "problem", "error", "fail", "negative", "difficult"])
+    if positive > negative:
+        sentiment = "positive"
+    elif negative > positive:
+        sentiment = "negative"
+    else:
+        sentiment = "neutral"
+
+    action_items = re.findall(
+        r'(?:to|need to|must|should|will)\s+(.+?)(?:by|before|\.|$)',
+        text, re.IGNORECASE
+    )
+    action_items_deduped = []
+    for a in action_items:
+        task = a.strip().rstrip(".")
+        if task and len(task) > 5:
+            deadline_match = re.search(r'\b(\w+day|\d{1,2}/\d{1,2}|\d{4}-\d{2}-\d{2})\b', task)
+            deadline = deadline_match.group(1) if deadline_match else ""
+            clean_task = re.sub(r'\s+by\s+\w+day.*', '', task).strip()
+            action_items_deduped.append({"task": clean_task[:80], "assignee": "", "deadline": deadline})
+
+    sentences = re.split(r'[.!?\n]+', text)
+    sentences = [s.strip() for s in sentences if len(s.strip()) > 20]
+    summary = " ".join(sentences[:2]) if sentences else text[:150]
+
+    kp_match = re.findall(r'(?:discussed|covered|talked about|topic|point|item)\s*:\s*(.+?)(?:\.|$)', text, re.IGNORECASE)
+    key_points = [{"topic": kp.strip()[:60], "detail": kp.strip()[:200]} for kp in kp_match[:5]]
+
+    if not key_points:
+        parts = [s.strip() for s in sentences[:3] if len(s.strip()) > 30]
+        key_points = [{"topic": p[:50], "detail": p[:200]} for p in parts]
+        if not key_points:
+            key_points = [{"topic": first_line[:50], "detail": first_line[:200]}]
+
+    first_sentence = re.split(r'[.!?\n]', text)[0] if text else text
+    title = first_sentence[:80] if len(first_sentence) > 10 else first_line[:80]
+
+    tags = [doc_type.replace("_", " ").title()]
+    for w in ["meeting", "update", "report", "planning", "review", "technical", "design", "api", "ui", "bug"]:
+        if w in lower:
+            tags.append(w.title())
+    tags = list(dict.fromkeys(tags))[:8]
+
+    return {
+        "title": title,
+        "document_type": doc_type,
+        "participants": participants,
+        "date": "",
+        "key_points": key_points,
+        "action_items": action_items_deduped,
+        "summary": summary[:300],
+        "sentiment": sentiment,
+        "tags": tags,
+    }
 
 
 def extract_structured(text: str, model: str | None = None) -> dict:
@@ -75,12 +152,17 @@ def extract_structured(text: str, model: str | None = None) -> dict:
         }
 
     text = text.strip()
-
     prompt = USER_TEMPLATE.format(text=text)
 
     start = time.time()
     response = _call_ollama(prompt, model=model)
     elapsed = time.time() - start
+
+    if response is None:
+        result = _fallback_extract(text)
+        result["_processing_time"] = round(elapsed, 2)
+        result["_model"] = "fallback"
+        return result
 
     cleaned = response.strip()
     if cleaned.startswith("```"):
@@ -101,17 +183,8 @@ def extract_structured(text: str, model: str | None = None) -> dict:
             else:
                 raise
         except (json.JSONDecodeError, ValueError):
-            result = {
-                "title": "Parsing error",
-                "document_type": "other",
-                "participants": [],
-                "date": "",
-                "key_points": [{"topic": "raw_output", "detail": cleaned[:500]}],
-                "action_items": [],
-                "summary": cleaned[:300],
-                "sentiment": "neutral",
-                "tags": ["parse_error"],
-            }
+            result = _fallback_extract(text)
+            result["_raw"] = cleaned[:500]
 
     result["_processing_time"] = round(elapsed, 2)
     result["_model"] = model or LLM_MODEL

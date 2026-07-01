@@ -15,6 +15,8 @@ from storage.database import (
     get_source_by_checksum, get_extraction_by_source, list_sources, count_sources, delete_source
 )
 
+DEMO_TEXT = """Team standup meeting on June 15. John discussed the API integration progress - 80% complete. Sarah needs the UI mockups by Friday. Alice reported a bug in the login flow. Action items: John to finish API by Tuesday, Sarah to deliver mockups by Friday, Alice to fix login bug by Thursday. Overall sentiment is positive."""
+
 st.set_page_config(
     page_title="LocalDataForge",
     page_icon="🔨",
@@ -106,8 +108,7 @@ def main():
         if ollama_ok:
             st.success(f"✅ Ollama ({LLM_MODEL}) online")
         else:
-            st.error(f"❌ Ollama offline — start with: ollama serve")
-            st.stop()
+            st.warning("⚠️ Ollama offline — using fallback extraction")
 
         db_count = count_sources()
         st.info(f"📦 Database: {db_count} records")
@@ -175,9 +176,13 @@ def main():
                     with st.expander("📄 Transcript", expanded=False):
                         st.text(text_for_extraction)
         else:
+            demo_hint = ""
+            if not check_ollama():
+                demo_hint = DEMO_TEXT
             pasted = st.text_area(
                 "Paste your text",
                 height=200,
+                value=demo_hint,
                 placeholder="Paste meeting notes, lecture content, voice memo transcription, or any unstructured text..."
             )
             if pasted:
