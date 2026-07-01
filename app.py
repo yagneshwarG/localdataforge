@@ -47,8 +47,9 @@ st.markdown("""
 def check_ollama() -> bool:
     try:
         import ollama
-        ollama.list()
-        return True
+        import httpx
+        resp = httpx.get("http://127.0.0.1:11434/api/tags", timeout=2)
+        return resp.status_code == 200
     except Exception:
         return False
 
@@ -151,7 +152,7 @@ def main():
                 source_name = uploaded_file.name
                 source_type = "audio"
 
-                temp_dir = Path("C:/Users/gango/projects/localdataforge/temp")
+                temp_dir = Path(__file__).parent / "temp"
                 temp_dir.mkdir(exist_ok=True)
                 temp_path = temp_dir / uploaded_file.name
 
